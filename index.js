@@ -80,7 +80,7 @@ const genAI = new GoogleGenAI(GEMINI_API_KEY);
 app.use(cors(corsOptions));
 app.use(express.json());
 
-// --- 7. GEMINI HELPER FUNCTION (UPDATED) ---
+// --- 7. GEMINI HELPER FUNCTION (TWEET) ---
 async function formatTweetWithGemini(text) {
   const prompt = `You are a professional news editor.
   Take the following English text and generate all the required fields.
@@ -131,6 +131,60 @@ async function formatTweetWithGemini(text) {
     };
   }
 }
+
+// --- 7.5 NEW GEMINI HELPER (GENERAL TEXT) ---
+async function formatTextWithGemini(text, instruction) {
+  const prompt = `You are a professional Telugu news editor.
+  You will be given a user's instruction and a piece of text.
+  Your task is to follow the instruction on the text and generate two items:
+
+  1.  **title:** A short, catchy headline in Telugu based on the result.
+  2.  **summary:** The resulting text, formatted as a concise summary in Telugu.
+
+  Follow the user's instruction precisely. 
+  - If the instruction is "translate english to telugu", you will translate the text and provide a title and summary of that translation.
+  - If the instruction is "summarize this telugu text", you will summarize it and provide a title for that summary.
+  - If the instruction is "translate hindi to telugu", you will do that and provide a title and summary.
+
+  Return ONLY a valid JSON object with two keys: "title" and "summary".
+  Do not add any other text, markdown, or backticks.
+
+  ---
+  User Instruction:
+  ${instruction}
+  ---
+  Input Text:
+  ${text}`;
+
+  try {
+    const result = await genAI.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [{ parts: [{ text: prompt }] }],
+    });
+
+    if (!result || !result.text) {
+      throw new Error("Gemini returned no text.");
+    }
+    
+    const cleanedJsonString = result.text.trim().replace(/```json/g, "").replace(/```/g, "").trim();
+    const parsedData = JSON.parse(cleanedJsonString);
+    
+    if (!parsedData.title || !parsedData.summary) {
+      throw new Error("Gemini returned incomplete JSON data (missing title or summary).");
+    }
+    
+    return parsedData; // Returns { title, summary }
+
+  } catch (error) {
+    console.error("Gemini helper function error (formatTextWithGemini):", error.message);
+    // Return a fallback if Gemini fails
+    return {
+      title: "Error in Processing",
+      summary: error.message,
+    };
+  }
+}
+
 
 // --- 8. TWEET PROCESSING HELPER (UPDATED) ---
 async function processTweetId(tweetId) {
@@ -358,6 +412,77 @@ app.get('/api/fetch-user-last-tweets', async (req, res) => {
     console.error(`Failed to process user ${userName} tweets:`, error.message);
     res.status(500).json({ 
       error: "Failed to process user's last tweets",
+      details: error.message 
+    });
+  }
+});
+
+// ** NEW ENDPOINT for custom text summarization **
+app.post('/api/summarize-text', async (req, res) => {
+  console.log('Received POST for /api/summarize-text');
+  
+  const { text, instruction } = req.body;
+
+  if (!text || !instruction) {
+    return res.status(400).json({ error: "Both 'text' and 'instruction' are required in the request body." });
+  }
+
+  try {
+    const geminiResult = await formatTextWithGemini(text, instruction);
+    res.json({ success: true, data: geminiResult });
+  } catch (error) {
+    console.error(`Failed to process custom text:`, error.message);
+    res.status(500).json({ 
+      success: false, 
+      error: "Failed to process text",
+      details: error.message 
+    });
+  }
+});
+
+// ** NEW ENDPOINT for updating an article **
+app.post('/api/update-article/:id', async (req, res) => {
+  console.log(`Received POST for /api/update-article/${req.params.id}`);
+  
+  const { id } = req.params;
+  const updatedData = req.body;
+
+  // Validate the MongoDB ObjectId
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ error: "Invalid Article ID format." });
+  }
+
+  // Remove _id from body if it exists, as it shouldn't be updated
+  delete updatedData._id;
+
+  try {
+    // Find the article by its MongoDB _id and update it
+    // { new: true } returns the modified document rather than the original
+    const updatedArticle = await Article.findByIdAndUpdate(
+      id, 
+      updatedData, 
+      { new: true, runValidators: true } // runValidators ensures schema rules are checked
+    );
+
+    if (!updatedArticle) {
+      return res.status(404).json({ success: false, error: "Article not found." });
+    }
+
+    res.json({ success: true, message: "Article updated successfully.", data: updatedArticle });
+
+  } catch (error) {
+    console.error(`Failed to update article ${id}:`, error.message);
+    if (error.code === 11000) {
+      // Handle potential duplicate key errors (e.g., if slug was changed to one that already exists)
+      return res.status(409).json({ 
+        success: false, 
+        error: "Update failed: Duplicate key.",
+        details: "A unique field (like slug or tweetId) already exists."
+      });
+    }
+    res.status(500).json({ 
+      success: false, 
+      error: "Failed to update article",
       details: error.message 
     });
   }
