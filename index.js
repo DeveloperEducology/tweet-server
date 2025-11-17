@@ -491,49 +491,80 @@ app.post('/api/update-article/:id', async (req, res) => {
 });
 
 
-
-app.get("/api/run-cron-twitter", async (req, res) => {
-  console.log("⏳ CRON API Triggered Manually");
-
-  const USERS = ["bigtvtelugu", "teluguscribe"];
-  const results = [];
-
-  // IMPORTANT FIX
-  const BASE_URL =
-    process.env.SERVER_URL || `http://localhost:${PORT}`;
-
-  for (const user of USERS) {
-    try {
-      console.log(`🔍 Fetching tweets for: ${user}`);
-
-      const response = await fetch(
-        `${BASE_URL}/api/fetch-user-last-tweets?userName=${user}`
-      );
-
-      const data = await response.json();
-
-      results.push({
-        user,
-        success: data.successfulPosts || [],
-        failed: data.failedIds || [],
-        skipped: data.skippedCachedIds || []
-      });
-
-      console.log(`✅ Completed: ${user}`);
-    } catch (err) {
-      console.error(`❌ Error processing ${user}:`, err.message);
-      results.push({
-        user,
-        error: err.message
-      });
-    }
+app.get('/api/fetch-user-last-tweets', async (req, res) => {
+  console.log("Received GET for /api/fetch-user-last-tweets");
+  
+  const { userName } = req.query;
+  if (!userName) {
+    return res.status(400).json({ error: "username query parameter is required." });
   }
+  
+  const TWITTER_USER_API_URL = "https://api.twitterapi.io/twitter/user/last_tweets";
+  
+  try {
+    const response = await fetch(
+      `${TWITTER_USER_API_URL}?userName=${userName}`,
+      { headers: { "X-API-Key": TWITTER_API_IO_KEY } }
+    );
 
-  res.json({
-    message: "Cron fetch completed for all users",
-    results
-  });
+    if (!response.ok) {
+      throw new Error(`Twitter User API request failed with status ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    if (data.status !== "success" || !data.tweets) {
+      console.warn(`Could not fetch tweets for username: ${userName}`);
+      throw new Error("Not found or Twitter API error");
+    }
+
+    const tweetsToProcess = [];
+    const skippedCachedIds = [];
+    const now = Date.now();
+
+    for (const tweet of data.tweets) {
+      const tweetId = tweet.id;
+      const cacheEntry = processedTweetCache.get(tweetId);
+
+      if (cacheEntry && (now - cacheEntry < CACHE_DURATION_MS)) {
+        skippedCachedIds.push(tweetId);
+      } else {
+        tweetsToProcess.push(tweet);
+      }
+    }
+
+    const successfulPosts = [];
+    const failedIds = [];
+
+    for (const tweet of tweetsToProcess) {
+      const tweetId = tweet.id;
+      const result = await processTweetId(tweetId); 
+      
+      if (result.success) {
+        successfulPosts.push(result.data);
+      } else {
+        failedIds.push({ id: result.id, reason: result.reason });
+      }
+      
+      processedTweetCache.set(tweetId, now);
+    }
+    
+    res.json({
+      message: `Fetched ${data.tweets.length} tweets. Processed ${successfulPosts.length}, failed ${failedIds.length}, skipped ${skippedCachedIds.length} (cached).`,
+      successfulPosts,
+      failedIds,
+      skippedCachedIds
+    });
+
+  } catch (error) {
+    console.error(`Failed to process user ${userName} tweets:`, error.message);
+    res.status(500).json({ 
+      error: "Failed to process user's last tweets",
+      details: error.message 
+    });
+  }
 });
+
 
 // --- 10. START THE SERVER ---
 app.listen(PORT, () => {
