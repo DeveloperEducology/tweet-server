@@ -335,9 +335,8 @@ app.post("/api/update-article/:id", async (req, res) => {
  ******************************************************************************************/
 
 const CRON_TWITTER_USERS = [
-  "naralokesh",
-  "ncbn",
-  "PMOIndia",
+  "bigtvtelugu",
+  "UttarandhraNow"
 ];
 
 cron.schedule("*/30 * * * *", async () => {
