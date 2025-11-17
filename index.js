@@ -34,6 +34,8 @@ const allowedOrigins = [
   'https://news-dashboard-ob0p.onrender.com'
 ];
 
+SERVER_URL="https://tweet-server-jd9n.onrender.com"
+
 const corsOptions = {
   origin: function (origin, callback) {
     if (!origin || allowedOrigins.indexOf(origin) !== -1) {
@@ -496,12 +498,16 @@ app.get("/api/run-cron-twitter", async (req, res) => {
   const USERS = ["bigtvtelugu", "teluguscribe"];
   const results = [];
 
+  // IMPORTANT FIX
+  const BASE_URL =
+    process.env.SERVER_URL || `http://localhost:${PORT}`;
+
   for (const user of USERS) {
     try {
       console.log(`🔍 Fetching tweets for: ${user}`);
 
       const response = await fetch(
-        `http://localhost:${PORT}/api/fetch-user-last-tweets?userName=${user}`
+        `${BASE_URL}/api/fetch-user-last-tweets?userName=${user}`
       );
 
       const data = await response.json();
@@ -528,7 +534,6 @@ app.get("/api/run-cron-twitter", async (req, res) => {
     results
   });
 });
-
 
 // --- 10. START THE SERVER ---
 app.listen(PORT, () => {
