@@ -1,18 +1,8 @@
-/******************************************************************************************
- *  FINAL COMPLETE SERVER.JS — COPY/PASTE READY
- *  Includes:
- *  ✔ All your original API logic  
- *  ✔ Cron job every 30 minutes
- *  ✔ Auto fetch tweets → save as article
- *  ✔ BASE_URL support for Render + Localhost
- ******************************************************************************************/
-
-import express from "express";
-import { GoogleGenAI } from "@google/genai";
-import dotenv from "dotenv";
-import cors from "cors";
-import mongoose from "mongoose";
-import cron from "node-cron";
+import express from 'express';
+import { GoogleGenAI } from '@google/genai';
+import dotenv from 'dotenv';
+import cors from 'cors';
+import mongoose from 'mongoose'; // Added for database
 
 // --- 1. INITIALIZATION ---
 dotenv.config();
@@ -20,97 +10,93 @@ const app = express();
 
 const PORT = process.env.PORT || 4001;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const MONGO_URI = process.env.MONGO_URI;
-const TWITTER_API_IO_KEY = process.env.TWITTER_API_KEY;
-
-// --- BASE URL HANDLING (Render vs Local) ---
-const BASE_URL =
-  process.env.NODE_ENV === "production"
-    ? "https://tweet-server-jd9n.onrender.com"
-    : `http://localhost:${PORT}`;
+const MONGO_URI = process.env.MONGO_URI; // Added for database
+const TWITTER_API_IO_KEY = process.env.TWITTER_API_KEY; // Added for Twitter
 
 // --- 2. VALIDATE KEYS ---
 if (!GEMINI_API_KEY || !MONGO_URI || !TWITTER_API_IO_KEY) {
-  console.error("❌ Missing required env variables");
+  console.error("Error: Missing required .env variables (GEMINI_API_KEY, MONGO_URI, TWITTER_API_KEY)");
   process.exit(1);
 }
 
-// --- 3. CACHE ---
+// --- 3. CACHE SETUP (NEW) ---
 const processedTweetCache = new Map();
-const CACHE_DURATION_MS = 12 * 60 * 60 * 1000;
+const CACHE_DURATION_MS = 12 * 60 * 60 * 1000; 
 
-// --- 4. DATABASE CONNECT ---
-mongoose
-  .connect(MONGO_URI)
+// --- 4. DATABASE SETUP & CORS ---
+mongoose.connect(MONGO_URI)
   .then(() => console.log("✅ MongoDB Connected"))
-  .catch((err) => console.error("❌ MongoDB Error:", err));
+  .catch((err) => console.error("❌ MongoDB Connection Error:", err));
 
 const allowedOrigins = [
-  "http://localhost:3000",
-  "http://localhost:3001",
-  "https://news-dashboard-ob0p.onrender.com",
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'https://news-dashboard-ob0p.onrender.com'
 ];
 
-// --- CORS ---
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
-      }
-    },
-  })
-);
+const corsOptions = {
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  }
+};
 
-app.use(express.json());
-
-/******************************************************************************************
- *  ARTICLE SCHEMA
- ******************************************************************************************/
+// ** UPDATED Article Schema **
 const articleSchema = new mongoose.Schema(
   {
-    title: { type: String, required: true },
-    slug: { type: String, required: true, unique: true, sparse: true },
-    summary: String,
-    content: String,
-    liveContent: String,
+    title: { type: String, required: true }, // Telugu Title
+    slug: { type: String, required: true, unique: true, sparse: true }, // English Slug
+    summary: { type: String }, // Telugu Summary
+    content: { type: String }, 
+    liveContent: { type: String }, 
     isFullArticle: { type: Boolean, default: false },
     author: { type: String, default: "Admin" },
     category: { type: String, default: "news" },
-    featuredImage: String,
-    featuredVideo: String,
-    tags: [String],
-    publishedDate: Date,
+    featuredImage: { type: String, default: "placeholder" },
+    featuredVideo: { type: String, default: "" },
+    tags: [String], // English Tags
+    publishedDate: { type: Date },
     status: { type: String, default: "published" },
     tweetId: { type: String, unique: true, sparse: true },
-    tweetUrl: String,
-    twitterEmbed: String,
+    tweetUrl: { type: String },
+    twitterEmbed: { type: String },
 
-    slug_te: String,
-    tags_te: [String],
-
-    // NEW FIELD
-    type: { type: String, default: "twitter" },
+    // --- NEW TELUGU FIELDS ---
+    slug_te: { type: String, sparse: true }, // Telugu Slug
+    tags_te: [String], // Telugu Tags
   },
   { timestamps: true, collection: "articles" }
 );
 
 const Article = mongoose.model("Article", articleSchema);
 
-/******************************************************************************************
- *  GEMINI FORMATTER FUNCTIONS
- ******************************************************************************************/
+// --- 5. GEMINI SETUP ---
 const genAI = new GoogleGenAI(GEMINI_API_KEY);
 
+// --- 6. MIDDLEWARE ---
+app.use(cors(corsOptions));
+app.use(express.json());
+
+// --- 7. GEMINI HELPER FUNCTION (TWEET) ---
 async function formatTweetWithGemini(text) {
-  const prompt = `
-    You are a professional Telugu news editor.
-    Generate JSON only:
-    { "title", "summary", "slug", "tags", "slug_te", "tags_te" }
-    Text: ${text}
-  `;
+  const prompt = `You are a professional news editor.
+  Take the following English text and generate all the required fields.
+
+  1.  **title:** A short, catchy headline translated into **Telugu**.
+  2.  **summary:** A concise summary translated into **Telugu**, approximately 50 words like telugu professional news editor.
+  3.  **slug:** A URL-friendly slug based on the *original English text* (e.g., "new-system-implemented").
+  4.  **tags:** An array of 3-5 relevant tags in **English** (e.g., ["viral", "news"]).
+  5.  **slug_te:** A URL-friendly slug based on the *Telugu title* (e.g., "kotha-pranali-amalu").
+  6.  **tags_te:** An array of 3-5 relevant tags in **Telugu** (e.g., ["వైరల్", "వార్తలు"]).
+
+  Return ONLY a valid JSON object with six keys: "title", "summary", "slug", "tags", "slug_te", and "tags_te".
+  Do not add any other text, markdown, or backticks.
+
+  Input Text:
+  ${text}`;
 
   try {
     const result = await genAI.models.generateContent({
@@ -118,26 +104,57 @@ async function formatTweetWithGemini(text) {
       contents: [{ parts: [{ text: prompt }] }],
     });
 
-    const cleaned = result.text.replace(/```json|```/g, "").trim();
-    return JSON.parse(cleaned);
-  } catch (e) {
+    if (!result || !result.text) {
+      throw new Error("Gemini returned no text.");
+    }
+    
+    const cleanedJsonString = result.text.trim().replace(/```json/g, "").replace(/```/g, "").trim();
+    const parsedData = JSON.parse(cleanedJsonString);
+    
+    // Updated validation for new keys
+    if (!parsedData.title || !parsedData.summary || !parsedData.slug || !parsedData.tags || !parsedData.slug_te || !parsedData.tags_te) {
+      throw new Error("Gemini returned incomplete JSON data.");
+    }
+    
+    return parsedData; // Returns { title, summary, slug, tags, slug_te, tags_te }
+
+  } catch (error) {
+    console.error("Gemini helper function error:", error.message);
+    // Return a fallback if Gemini fails
     return {
-      title: text.slice(0, 60),
+      title: text.slice(0, 50),
       summary: text,
-      slug: "fallback-" + Date.now(),
-      tags: ["news"],
-      slug_te: "fallback-te-" + Date.now(),
-      tags_te: ["వార్తలు"],
+      slug: `fallback-${Date.now()}`, // English slug
+      tags: ["news"], // English tags
+      slug_te: `fallback-te-${Date.now()}`, // Telugu slug
+      tags_te: ["వార్తలు"], // Telugu tags
     };
   }
 }
 
+// --- 7.5 NEW GEMINI HELPER (GENERAL TEXT) ---
 async function formatTextWithGemini(text, instruction) {
-  const prompt = `
-    Process the text following instruction: ${instruction}
-    Return JSON: { "title", "summary" }
-    Text: ${text}
-  `;
+  const prompt = `You are a professional Telugu news editor.
+  You will be given a user's instruction and a piece of text.
+  Your task is to follow the instruction on the text and generate two items:
+
+  1.  **title:** A short, catchy headline in Telugu based on the result.
+  2.  **summary:** The resulting text, formatted as a concise summary in Telugu.
+
+  Follow the user's instruction precisely. 
+  - If the instruction is "translate english to telugu", you will translate the text and provide a title and summary of that translation.
+  - If the instruction is "summarize this telugu text", you will summarize it and provide a title for that summary.
+  - If the instruction is "translate hindi to telugu", you will do that and provide a title and summary.
+
+  Return ONLY a valid JSON object with two keys: "title" and "summary".
+  Do not add any other text, markdown, or backticks.
+
+  ---
+  User Instruction:
+  ${instruction}
+  ---
+  Input Text:
+  ${text}`;
 
   try {
     const result = await genAI.models.generateContent({
@@ -145,223 +162,334 @@ async function formatTextWithGemini(text, instruction) {
       contents: [{ parts: [{ text: prompt }] }],
     });
 
-    const cleaned = result.text.replace(/```json|```/g, "").trim();
-    return JSON.parse(cleaned);
-  } catch (e) {
-    return { title: "Error", summary: e.message };
+    if (!result || !result.text) {
+      throw new Error("Gemini returned no text.");
+    }
+    
+    const cleanedJsonString = result.text.trim().replace(/```json/g, "").replace(/```/g, "").trim();
+    const parsedData = JSON.parse(cleanedJsonString);
+    
+    if (!parsedData.title || !parsedData.summary) {
+      throw new Error("Gemini returned incomplete JSON data (missing title or summary).");
+    }
+    
+    return parsedData; // Returns { title, summary }
+
+  } catch (error) {
+    console.error("Gemini helper function error (formatTextWithGemini):", error.message);
+    // Return a fallback if Gemini fails
+    return {
+      title: "Error in Processing",
+      summary: error.message,
+    };
   }
 }
 
-/******************************************************************************************
- *  PROCESS TWEET + SAVE TO DB
- ******************************************************************************************/
+
+// --- 8. TWEET PROCESSING HELPER (UPDATED) ---
 async function processTweetId(tweetId) {
   const TWITTER_API_URL = "https://api.twitterapi.io/twitter/tweets";
-
+  
   try {
+    // --- Step 1: Fetch from Twitter API ---
     const response = await fetch(`${TWITTER_API_URL}?tweet_ids=${tweetId}`, {
-      headers: { "X-API-Key": TWITTER_API_IO_KEY },
+      headers: {
+        "X-API-Key": TWITTER_API_IO_KEY
+      }
     });
 
-    if (!response.ok) throw new Error("Twitter API request failed");
-
+    if (!response.ok) {
+      throw new Error(`Twitter API request failed with status ${response.status}`);
+    }
+    
     const data = await response.json();
-    if (!data?.tweets?.[0]) throw new Error("Tweet not found");
+
+    if (data.status !== "success" || !data.tweets || data.tweets.length === 0) {
+      console.warn(`Could not fetch or find tweet with ID: ${tweetId}`);
+      throw new Error("Not found or API error");
+    }
 
     const tweet = data.tweets[0];
-    const geminiData = await formatTweetWithGemini(tweet.text);
 
-    const twitterEmbed = `
-      <blockquote class="twitter-tweet">
-        <p>${tweet.text}</p>
-        — ${tweet.author.name} (@${tweet.author.userName})
-        <a href="${tweet.url}">${tweet.createdAt}</a>
-      </blockquote>
-      <script async src="https://platform.twitter.com/widgets.js"></script>
-    `;
+    // --- Step 2: Process with Gemini ---
+    const geminiResult = await formatTweetWithGemini(tweet.text);
 
-    const article = new Article({
-      title: geminiData.title,
-      summary: geminiData.summary,
-      slug: geminiData.slug,
-      slug_te: geminiData.slug_te,
-      tags: geminiData.tags,
-      tags_te: geminiData.tags_te,
-      content: geminiData.summary,
-      liveContent: geminiData.summary,
-      tweetId: tweet.id,
-      tweetUrl: tweet.url,
-      featuredImage:
-        tweet.extendedEntities?.media?.[0]?.media_url_https || null,
-      twitterEmbed,
-      author: "Vijay",
-      category: "news",
-      publishedDate: new Date(),
-      status: "published",
-      type: "twitter",
+    // --- Step 3: Construct Twitter Embed ---
+    const tweetDate = new Date(tweet.createdAt).toLocaleDateString('en-US', {
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric'
     });
 
-    const savedArticle = await article.save();
+    const twitterEmbed = `
+      <blockquote class="twitter-tweet" data-media-max-width="560">
+        <p lang="${tweet.lang || 'en'}" dir="ltr">${tweet.text}</p>
+        &mdash; ${tweet.author.name} (@${tweet.author.userName}) 
+        <a href="${tweet.url}">${tweetDate}</a>
+      </blockquote>
+      <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
+    `;
+    
+    const liveContent = `${geminiResult.summary}`;
+
+    // --- Step 4: Save to Database (Updated) ---
+    const newArticle = new Article({
+      title: geminiResult.title, // Telugu
+      slug: geminiResult.slug, // English
+      summary: geminiResult.summary, // Telugu
+      content: geminiResult.summary ? geminiResult.summary : `<p>${tweet.text}</p>`,
+      liveContent: liveContent,
+      isFullArticle: false,
+      author: "Vijay",
+      category: "news",
+      featuredImage: tweet.extendedEntities?.media?.[0]?.media_url_https || null,
+      featuredVideo: "",
+      tags: geminiResult.tags, // English
+      publishedDate: new Date(),
+      status: "draft",
+      tweetId: tweet.id,
+      tweetUrl: tweet.url,
+      twitterEmbed: twitterEmbed,
+      
+      // --- NEW TELUGU FIELDS ADDED ---
+      slug_te: geminiResult.slug_te,
+      tags_te: geminiResult.tags_te,
+    });
+
+    const savedArticle = await newArticle.save();
     return { success: true, data: savedArticle };
+
   } catch (error) {
+    console.error(`Failed to process tweet ID ${tweetId}:`, error.message);
+    if (error.code === 11000) {
+      console.warn(`Article with this tweetId or slug already exists: ${tweetId}`);
+    }
     return { success: false, id: tweetId, reason: error.message };
   }
 }
 
-/******************************************************************************************
- *  TWEET FETCH ROUTES (UNCHANGED)
- ******************************************************************************************/
+// --- 9. API ENDPOINTS ---
 
-app.post("/api/fetch-tweet-and-save", async (req, res) => {
+// ** POST ENDPOINT (from req.body) **
+app.post('/api/fetch-tweet-and-save', async (req, res) => {
+  console.log('Received POST for /api/fetch-tweet-and-save');
+  
   const { tweet_ids } = req.body;
-  if (!tweet_ids) return res.status(400).json({ error: "tweet_ids required" });
 
-  const success = [];
-  const failed = [];
-
-  for (const id of tweet_ids) {
-    const result = await processTweetId(id);
-    result.success ? success.push(result.data) : failed.push(result);
+  if (!tweet_ids || !Array.isArray(tweet_ids) || tweet_ids.length === 0) {
+    return res.status(400).json({ error: "tweet_ids must be a non-empty array." });
   }
 
-  res.json({ success, failed });
-});
+  const successfulPosts = [];
+  const failedIds = [];
 
-app.get("/api/fetch-tweet-and-save", async (req, res) => {
-  const ids = req.query.tweet_ids?.split(",") || [];
-
-  const success = [];
-  const failed = [];
-
-  for (const id of ids) {
-    const result = await processTweetId(id);
-    result.success ? success.push(result.data) : failed.push(result);
+  for (const tweetId of tweet_ids) {
+    const result = await processTweetId(tweetId);
+    if (result.success) {
+      successfulPosts.push(result.data);
+    } else {
+      failedIds.push({ id: result.id, reason: result.reason });
+    }
   }
 
-  res.json({ success, failed });
+  res.json({
+    message: `Processed ${successfulPosts.length} of ${tweet_ids.length} tweets.`,
+    successfulPosts: successfulPosts,
+    failedIds: failedIds,
+  });
 });
 
-/******************************************************************************************
- *  FETCH USER LAST TWEETS
- ******************************************************************************************/
-app.get("/api/fetch-user-last-tweets", async (req, res) => {
+// ** GET ENDPOINT (from req.query) **
+app.get('/api/fetch-tweet-and-save', async (req, res) => {
+  console.log('Received GET for /api/fetch-tweet-and-save');
+  
+  const { tweet_ids } = req.query;
+
+  if (!tweet_ids) {
+    return res.status(400).json({ error: "tweet_ids query parameter is required." });
+  }
+
+  const idsToProcess = tweet_ids.split(',')
+                                .map(id => id.trim())
+                                .filter(id => id.length > 0);
+
+  if (idsToProcess.length === 0) {
+    return res.status(400).json({ error: "No valid tweet_ids provided." });
+  }
+
+  const successfulPosts = [];
+  const failedIds = [];
+
+  for (const tweetId of idsToProcess) {
+    const result = await processTweetId(tweetId);
+    if (result.success) {
+      successfulPosts.push(result.data);
+    } else {
+      failedIds.push({ id: result.id, reason: result.reason });
+    }
+  }
+
+  res.json({
+    message: `Processed ${successfulPosts.length} of ${idsToProcess.length} tweets.`,
+    successfulPosts: successfulPosts,
+    failedIds: failedIds,
+  });
+});
+
+// ** UPDATED GET ENDPOINT (for user's last tweets with caching by USERNAME) **
+app.get('/api/fetch-user-last-tweets', async (req, res) => {
+  console.log("Received GET for /api/fetch-user-last-tweets");
+  
   const { userName } = req.query;
-  if (!userName) return res.status(400).json({ error: "username required" });
-
-  const API_URL = "https://api.twitterapi.io/twitter/user/last_tweets";
-
+  
+  if (!userName) {
+    return res.status(400).json({ error: "username query parameter is required." });
+  }
+  
+  const TWITTER_USER_API_URL = "https://api.twitterapi.io/twitter/user/last_tweets";
+  
   try {
-    const response = await fetch(`${API_URL}?userName=${userName}`, {
-      headers: { "X-API-Key": TWITTER_API_IO_KEY },
+    // --- Step 1: Fetch user's last tweets ---
+    const response = await fetch(`${TWITTER_USER_API_URL}?userName=${userName}`, {
+      headers: {
+        "X-API-Key": TWITTER_API_IO_KEY
+      }
     });
 
+    if (!response.ok) {
+      throw new Error(`Twitter User API request failed with status ${response.status}`);
+    }
+    
     const data = await response.json();
-    let tweets =
-      data?.tweets ?? data?.data?.tweets ?? data?.items ?? [];
+    
+    if (data.status !== "success" || !data.tweets) {
+      console.warn(`Could not fetch tweets for username: ${userName}`);
+      throw new Error("Not found or Twitter API error");
+    }
 
-    if (!Array.isArray(tweets)) tweets = [];
-
-    const toProcess = [];
-    const skipped = [];
+    // --- Step 2: Filter tweets against cache (This logic remains the same) ---
+    const tweetsToProcess = [];
+    const skippedCachedIds = [];
     const now = Date.now();
 
-    for (const t of tweets) {
-      const cached = processedTweetCache.get(t.id);
+    for (const tweet of data.tweets) {
+      const tweetId = tweet.id;
+      const cacheEntry = processedTweetCache.get(tweetId);
 
-      if (cached && now - cached < CACHE_DURATION_MS) {
-        skipped.push(t.id);
+      if (cacheEntry && (now - cacheEntry < CACHE_DURATION_MS)) {
+        skippedCachedIds.push(tweetId);
       } else {
-        toProcess.push(t);
+        tweetsToProcess.push(tweet);
       }
     }
+    
+    // --- Step 3: Process the filtered tweets (This logic remains the same) ---
+    const successfulPosts = [];
+    const failedIds = [];
 
-    const success = [];
-    const failed = [];
-
-    for (const t of toProcess) {
-      const res = await processTweetId(t.id);
-      res.success ? success.push(res.data) : failed.push(res);
-      processedTweetCache.set(t.id, now);
+    for (const tweet of tweetsToProcess) {
+      const tweetId = tweet.id;
+      const result = await processTweetId(tweetId); 
+      
+      if (result.success) {
+        successfulPosts.push(result.data);
+      } else {
+        failedIds.push({ id: result.id, reason: result.reason });
+      }
+      
+      processedTweetCache.set(tweetId, now);
     }
-
-    res.json({ success, failed, skipped });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-/******************************************************************************************
- *  GET ALL ARTICLES
- ******************************************************************************************/
-app.get("/api/articles", async (req, res) => {
-  try {
-    const articles = await Article.find().sort({ createdAt: -1 });
-    res.json({ success: true, data: articles });
-  } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
-  }
-});
-
-/******************************************************************************************
- *  CUSTOM TEXT SUMMARIZATION
- ******************************************************************************************/
-app.post("/api/summarize-text", async (req, res) => {
-  const { text, instruction } = req.body;
-
-  const result = await formatTextWithGemini(text, instruction);
-  res.json({ success: true, data: result });
-});
-
-/******************************************************************************************
- *  UPDATE ARTICLE
- ******************************************************************************************/
-app.post("/api/update-article/:id", async (req, res) => {
-  try {
-    const updated = await Article.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true,
+    
+    // --- Step 4: Send response (This logic remains the same) ---
+    res.json({
+      message: `Fetched ${data.tweets.length} tweets. Processed ${successfulPosts.length}, failed ${failedIds.length}, skipped ${skippedCachedIds.length} (cached).`,
+      successfulPosts: successfulPosts,
+      failedIds: failedIds,
+      skippedCachedIds: skippedCachedIds
     });
 
-    if (!updated) return res.status(404).json({ error: "Not found" });
-
-    res.json({ success: true, data: updated });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+  } catch (error) {
+    console.error(`Failed to process user ${userName} tweets:`, error.message);
+    res.status(500).json({ 
+      error: "Failed to process user's last tweets",
+      details: error.message 
+    });
   }
 });
 
-/******************************************************************************************
- *  CRON JOB — RUNS EVERY 30 MINUTES
- ******************************************************************************************/
+// ** NEW ENDPOINT for custom text summarization **
+app.post('/api/summarize-text', async (req, res) => {
+  console.log('Received POST for /api/summarize-text');
+  
+  const { text, instruction } = req.body;
 
-const CRON_TWITTER_USERS = [
-  "bigtvtelugu",
-  "UttarandhraNow"
-];
+  if (!text || !instruction) {
+    return res.status(400).json({ error: "Both 'text' and 'instruction' are required in the request body." });
+  }
 
-cron.schedule("*/30 * * * *", async () => {
-  console.log("⏳ CRON: Fetching tweets...");
+  try {
+    const geminiResult = await formatTextWithGemini(text, instruction);
+    res.json({ success: true, data: geminiResult });
+  } catch (error) {
+    console.error(`Failed to process custom text:`, error.message);
+    res.status(500).json({ 
+      success: false, 
+      error: "Failed to process text",
+      details: error.message 
+    });
+  }
+});
 
-  for (const userName of CRON_TWITTER_USERS) {
-    try {
-      const url = `${BASE_URL}/api/fetch-user-last-tweets?userName=${userName}`;
-      console.log("Fetching:", url);
+// ** NEW ENDPOINT for updating an article **
+app.post('/api/update-article/:id', async (req, res) => {
+  console.log(`Received POST for /api/update-article/${req.params.id}`);
+  
+  const { id } = req.params;
+  const updatedData = req.body;
 
-      const res = await fetch(url);
-      const result = await res.json();
+  // Validate the MongoDB ObjectId
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ error: "Invalid Article ID format." });
+  }
 
-      console.log(
-        `✔ CRON DONE — @${userName} | saved=${result.success?.length || 0}`
-      );
-    } catch (err) {
-      console.error(`❌ CRON FAILED @${userName}:`, err.message);
+  // Remove _id from body if it exists, as it shouldn't be updated
+  delete updatedData._id;
+
+  try {
+    // Find the article by its MongoDB _id and update it
+    // { new: true } returns the modified document rather than the original
+    const updatedArticle = await Article.findByIdAndUpdate(
+      id, 
+      updatedData, 
+      { new: true, runValidators: true } // runValidators ensures schema rules are checked
+    );
+
+    if (!updatedArticle) {
+      return res.status(404).json({ success: false, error: "Article not found." });
     }
+
+    res.json({ success: true, message: "Article updated successfully.", data: updatedArticle });
+
+  } catch (error) {
+    console.error(`Failed to update article ${id}:`, error.message);
+    if (error.code === 11000) {
+      // Handle potential duplicate key errors (e.g., if slug was changed to one that already exists)
+      return res.status(409).json({ 
+        success: false, 
+        error: "Update failed: Duplicate key.",
+        details: "A unique field (like slug or tweetId) already exists."
+      });
+    }
+    res.status(500).json({ 
+      success: false, 
+      error: "Failed to update article",
+      details: error.message 
+    });
   }
 });
 
-/******************************************************************************************
- *  START SERVER
- ******************************************************************************************/
+
+// --- 10. START THE SERVER ---
 app.listen(PORT, () => {
-  console.log(`🚀 Server running at ${BASE_URL}`);
+  console.log(`✅ Server with Twitter & DB running at http://localhost:${PORT}`);
 });
