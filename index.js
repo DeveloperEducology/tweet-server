@@ -489,6 +489,47 @@ app.post('/api/update-article/:id', async (req, res) => {
 });
 
 
+
+app.get("/api/run-cron-twitter", async (req, res) => {
+  console.log("⏳ CRON API Triggered Manually");
+
+  const USERS = ["bigtvtelugu", "teluguscribe"];
+  const results = [];
+
+  for (const user of USERS) {
+    try {
+      console.log(`🔍 Fetching tweets for: ${user}`);
+
+      const response = await fetch(
+        `http://localhost:${PORT}/api/fetch-user-last-tweets?userName=${user}`
+      );
+
+      const data = await response.json();
+
+      results.push({
+        user,
+        success: data.successfulPosts || [],
+        failed: data.failedIds || [],
+        skipped: data.skippedCachedIds || []
+      });
+
+      console.log(`✅ Completed: ${user}`);
+    } catch (err) {
+      console.error(`❌ Error processing ${user}:`, err.message);
+      results.push({
+        user,
+        error: err.message
+      });
+    }
+  }
+
+  res.json({
+    message: "Cron fetch completed for all users",
+    results
+  });
+});
+
+
 // --- 10. START THE SERVER ---
 app.listen(PORT, () => {
   console.log(`✅ Server with Twitter & DB running at http://localhost:${PORT}`);
