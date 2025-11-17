@@ -390,7 +390,7 @@ app.get("/api/run-cron-twitter", async (req, res) => {
   console.log("⏳ CRON API Triggered Manually");
 
   // Add as many users as you want here
-  const USERS = ["AdityaRajKaul", "bigtvtelugu", "UttarandhraNow"];
+  const USERS = ["AdityaRajKaul", "bigtvtelugu", "UttarandhraNow","AdityaRajKaul", "TeluguScribe" ];
   const results = [];
 
   // Use correct URL for localhost + production
