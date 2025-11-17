@@ -34,7 +34,7 @@ const allowedOrigins = [
   'https://news-dashboard-ob0p.onrender.com'
 ];
 
-SERVER_URL="https://tweet-server-jd9n.onrender.com"
+const BASE_URL="https://tweet-server-jd9n.onrender.com"
 
 const corsOptions = {
   origin: function (origin, callback) {
